@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,11 +32,18 @@ import (
 type CronJobReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Clock
 }
+
+var (
+	scheduledTimeAnnotation = "batch.tutorial.kubebuilder.io/scheduled-at"
+)
 
 //+kubebuilder:rbac:groups=batch.tutorial.kubebuilder.io,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=batch.tutorial.kubebuilder.io,resources=cronjobs/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=batch.tutorial.kubebuilder.io,resources=cronjobs/finalizers,verbs=update
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=batch,resources=jobs/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -49,7 +57,99 @@ type CronJobReconciler struct {
 func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var cronJob batchv1.CronJob
+	if err := r.Get(ctx, req.NamespacedName, &cronJob); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	var childJobs kbatch.JobList
+	// client.InNamespace is actually a type of string. So client.InNamespace(req.Namespace) is actually instantiating a new client.InNamespace type.
+	if err := r.List(ctx, &childJobs, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
+		log.Log.Error(err, "unable to list child Jobs")
+		return ctrl.Result{}, err
+	}
+
+	var activeJobs []*kbatch.Job
+	var successfulJobs []*kbatch.Job
+	var failedJobs []*kbatch.Job
+	var mostRecentTime *time.Time
+
+	isJobFinished := func(job *kbatch.Job) (bool, kbatch.JobConditionType) {
+		for _, c := range job.Status.Conditions {
+			if (c.Type == kbatch.JobComplete || c.Type == kbatch.JobFailed) && c.Status == corev1.ConditionTrue {
+				return true, c.Type
+			}
+		}
+
+		return false, ""
+	}
+
+	getScheduledTimeForJob := func(job *kbatch.Job) (*time.Time, error) {
+		timeRaw := job.Annotations[scheduledTimeAnnotation]
+		if len(timeRaw) == 0 {
+			return nil, nil
+		}
+
+		timeParsed, err := time.Parse(time.RFC3339, timeRaw)
+		if err != nil {
+			return nil, err
+		}
+		return &timeParsed, nil
+	}
+
+	for i, job := range childJobs.Items {
+		_, finishedType := isJobFinished(&job)
+		switch finishedType {
+		case "": // ongoing
+			activeJobs = append(activeJobs, &childJobs.Items[i])
+		case kbatch.JobFailed:
+			failedJobs = append(failedJobs, &childJobs.Items[i])
+		case kbatch.JobComplete:
+			successfulJobs = append(successfulJobs, &childJobs.Items[i])
+		}
+
+		scheduledTimeForJob, err := getScheduledTimeForJob(&job)
+		if err != nil {
+			log.Error(err, "unable to parse schedule time for child job", "job", &job)
+			continue
+		}
+		if scheduledTimeForJob != nil {
+			if mostRecentTime == nil {
+				mostRecentTime = scheduledTimeForJob
+			} else if mostRecentTime.Before(*scheduledTimeForJob) {
+				mostRecentTime = scheduledTimeForJob
+			}
+		}
+	}
+
+	if mostRecentTime != nil {
+		cronJob.Status.LastScheduleTime = &metav1.Time{Time: *mostRecentTime}
+	} else {
+		cronJob.Status.LastScheduleTime = nil
+	}
+	cronJob.Status.Active = nil
+	for _, activeJob := range activeJobs {
+		jobRef, err := ref.GetReference(r.Scheme, activeJob)
+		if err != nil {
+			log.Error(err, "unable to make reference to active job", "job", activeJob)
+			continue
+		}
+		cronJob.Status.Active = append(cronJob.Status.Active, *jobRef)
+	}
+
+	log.V(1).Info("job count", "active jobs", len(activeJobs), "successful jobs", len(successfulJobs), "failed jobs", len(failedJobs))
+
+	// Update updates the fields corresponding to the status subresource for the
+	// given obj. obj must be a struct pointer so that obj can be updated
+	// with the content returned by the Server.
+	// Why there is not subresource as a param? Because of the corresponding Create method;
+	// Create saves the subResource object in the Kubernetes cluster. obj must be a
+	// struct pointer so that obj can be updated with the content returned by the Server.
+	// Signature: Create(ctx context.Context, obj Object, subResource Object, opts ...SubResourceCreateOption) error
+	if err := r.Status().Update(ctx, &cronJob); err != nil {
+		log.Error(err, "unable to update CronJob status")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
