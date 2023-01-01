@@ -8,6 +8,6 @@
 Upto:
 
 https://book.kubebuilder.io/cronjob-tutorial/running.html
-Now that we know it’s working, we can run it in the cluster
+Now that we know it's working, we can run it in the cluster
 
-Before that
+Before that: Now that the controller is runnable, play with it and understand how all the code works
