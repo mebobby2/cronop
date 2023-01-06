@@ -1,4 +1,5 @@
 # cronop
+Based off this tutorial: https://book.kubebuilder.io/cronjob-tutorial/cronjob-tutorial.html
 
 ## Development
 1. make manifests (generates the CRDs, roles, and webhook k8s definitions)
@@ -7,7 +8,5 @@
 4. kubectl apply -f config/samples/batch_v1_cronjob.yaml (deploy test CRD)
 5. kubectl get cronjob.batch.tutorial.kubebuilder.io (view the list of custom CRDs for this type)
 
-Upto:
-
-https://book.kubebuilder.io/cronjob-tutorial/running.html
-Now that we know it's working, we can run it in the cluster
+## Tests
+1. go test (inside controllers/ folder)
