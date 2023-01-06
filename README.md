@@ -9,4 +9,4 @@ Based off this tutorial: https://book.kubebuilder.io/cronjob-tutorial/cronjob-tu
 5. kubectl get cronjob.batch.tutorial.kubebuilder.io (view the list of custom CRDs for this type)
 
 ## Tests
-1. go test (inside controllers/ folder)
+1. make test
